@@ -56,6 +56,13 @@ class MongoDebugPanel(DebugPanel):
             ctx['count'] += len(operation_tracker.removes)
             ctx['time'] += sum(x['time'] for x in operation_tracker.removes)
 
+        if operation_tracker.aggregates:
+            agg = operation_tracker.aggregates
+
+            ctx['operations'].append(fun('aggregate', agg))
+            ctx['count'] += len(operation_tracker.aggregates)
+            ctx['time'] += sum(x['time'] for x in operation_tracker.aggregates)
+
         ctx['time'] = '%.2f' % ctx['time']
 
         return mark_safe(Template(_NAV_SUBTITLE_TPL).render(Context(ctx)))
@@ -71,6 +78,7 @@ class MongoDebugPanel(DebugPanel):
             'queries': operation_tracker.queries,
             'inserts': operation_tracker.inserts,
             'updates': operation_tracker.updates,
-            'removes': operation_tracker.removes
+            'removes': operation_tracker.removes,
+            'aggregates': operation_tracker.aggregates
         })
 

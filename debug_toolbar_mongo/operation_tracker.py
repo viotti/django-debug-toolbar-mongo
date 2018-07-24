@@ -17,18 +17,13 @@ import pymongo
 import pymongo.collection
 import pymongo.cursor
 
-__all__ = ['queries', 'inserts', 'updates', 'removes', 'reset']
-
-if pymongo.version_tuple < (2, 4):
-    _SAFE_ARG = False
-
-else:
-    _SAFE_ARG = None
+__all__ = ['queries', 'inserts', 'updates', 'removes', 'aggregates', 'reset']
 
 _original_methods = {
     'insert': pymongo.collection.Collection.insert,
     'update': pymongo.collection.Collection.update,
     'remove': pymongo.collection.Collection.remove,
+    'aggregate': pymongo.collection.Collection.aggregate,
     'refresh': pymongo.cursor.Cursor._refresh,
 }
 
@@ -36,6 +31,7 @@ queries = []
 inserts = []
 updates = []
 removes = []
+aggregates = []
 
 WANT_STACK_TRACE = getattr(settings, 'DEBUG_TOOLBAR_MONGO_STACKTRACES', True)
 def _get_stacktrace():
@@ -61,13 +57,12 @@ def _get_stacktrace():
 # Wrap Collection.insert for getting inserts
 @functools.wraps(_original_methods['insert'])
 def _insert(collection_self, doc_or_docs, manipulate=True,
-           safe=_SAFE_ARG, check_keys=True, **kwargs):
+           check_keys=True, **kwargs):
     start_time = time.time()
     result = _original_methods['insert'](
         collection_self,
         doc_or_docs,
         manipulate=manipulate,
-        safe=safe,
         check_keys=check_keys,
         **kwargs
     )
@@ -77,7 +72,6 @@ def _insert(collection_self, doc_or_docs, manipulate=True,
     inserts.append({
         'collection': collection_self.name,
         'document': doc_or_docs,
-        'safe': safe,
         'time': total_time,
         'stack_trace': _get_stacktrace(),
     })
@@ -87,14 +81,13 @@ pymongo.collection.Collection.insert = _insert
 # Wrap Collection.update for getting updates
 @functools.wraps(_original_methods['update'])
 def _update(collection_self, spec, document, upsert=False,
-           maniuplate=False, safe=_SAFE_ARG, multi=False, **kwargs):
+           maniuplate=False, multi=False, **kwargs):
     start_time = time.time()
     result = _original_methods['update'](
         collection_self,
         spec,
         document,
         upsert=upsert,
-        safe=safe,
         multi=multi,
         **kwargs
     )
@@ -107,7 +100,6 @@ def _update(collection_self, spec, document, upsert=False,
         'upsert': upsert,
         'multi': multi,
         'spec': spec,
-        'safe': safe,
         'time': total_time,
         'stack_trace': _get_stacktrace(),
     })
@@ -116,12 +108,11 @@ pymongo.collection.Collection.update = _update
 
 # Wrap Collection.remove for getting removes
 @functools.wraps(_original_methods['remove'])
-def _remove(collection_self, spec_or_id, safe=_SAFE_ARG, **kwargs):
+def _remove(collection_self, spec_or_id, **kwargs):
     start_time = time.time()
     result = _original_methods['remove'](
         collection_self,
         spec_or_id,
-        safe=safe,
         **kwargs
     )
     total_time = (time.time() - start_time) * 1000
@@ -130,12 +121,33 @@ def _remove(collection_self, spec_or_id, safe=_SAFE_ARG, **kwargs):
     removes.append({
         'collection': collection_self.name,
         'spec_or_id': spec_or_id,
-        'safe': safe,
         'time': total_time,
         'stack_trace': _get_stacktrace(),
     })
     return result
 pymongo.collection.Collection.remove = _remove
+
+# Wrap Collection.aggregate for getting aggregations.
+@functools.wraps(_original_methods['aggregate'])
+def _aggregate(collection_self, doc_or_docs, **kwargs):
+    start_time = time.time()
+    result = _original_methods['aggregate'](
+        collection_self,
+        doc_or_docs,
+        **kwargs
+    )
+
+    total_time = (time.time() - start_time) * 1000
+
+    __traceback_hide__ = True
+    aggregates.append({
+        'collection': collection_self.name,
+        'document': doc_or_docs,
+        'time': total_time,
+        'stack_trace': _get_stacktrace(),
+    })
+    return result
+pymongo.collection.Collection.aggregate = _aggregate
 
 # Wrap Cursor._refresh for getting queries
 @functools.wraps(_original_methods['refresh'])
@@ -178,6 +190,7 @@ def _cursor_refresh(cursor_self):
     query_data['collection'] = collection_name.full_name.split('.')[1]
 
     if query_data['collection'] == '$cmd':
+        query_son = query_son.get("$query", query_son)
         query_data['operation'] = 'command'
         # Handle count as a special case
         if 'count' in query_son:
@@ -187,12 +200,6 @@ def _cursor_refresh(cursor_self):
             query_data['skip'] = query_son.get('skip')
             query_data['limit'] = abs(query_son.get('limit', 0))
             query_data['query'] = query_son['query']
-        elif 'aggregate' in query_son:
-            query_data['collection'] = query_son['aggregate']
-            query_data['operation'] = 'aggregate'
-            query_data['query'] = query_son['pipeline']
-            query_data['skip'] = 0
-            query_data['limit'] = None
     else:
         # Normal Query
         query_data['skip'] = privar('skip')
@@ -206,11 +213,12 @@ def _cursor_refresh(cursor_self):
 pymongo.cursor.Cursor._refresh = _cursor_refresh
 
 def reset():
-    global queries, inserts, updates, removes
+    global queries, inserts, updates, removes, aggregates
     queries = []
     inserts = []
     updates = []
     removes = []
+    aggregates = []
 
 def _get_ordering(son):
     """Helper function to extract formatted ordering from dict.
